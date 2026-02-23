@@ -30,7 +30,7 @@
 <body>
 <div id="debug-info">モード: 自由配置 (Manual)</div>
 
-<!-- ✅ コメントはタグの外へ（ここ重要） -->
+<!-- ✅ コメントは a-scene の外へ（タグ破損防止） -->
 <!-- ✅ iOS安定化：背面カメラ固定 -->
 <a-scene
   vr-mode-ui="enabled: false"
@@ -46,7 +46,6 @@
   <a-light type="directional" position="-1 4 2" intensity="1.0"></a-light>
   <a-light type="hemisphere" color="#FFF" groundColor="#444" intensity="1.2"></a-light>
 
-  <!-- rotation-reader は未定義だと警告になるので一旦外す（必要なら後で復活できます） -->
   <a-camera id="main-camera"></a-camera>
 
   <a-entity id="ship"
@@ -113,25 +112,21 @@ let curScale = 5.0;
 let state = { moving: 0, turning: 0 };
 let zoomState = 0;
 
-/* --- GPS制御（必要に応じて変更） --- */
+/* --- GPS座標（必要に応じて変更） --- */
 const targetLat = 38.114742;
 const targetLon = 140.033621;
 
-/* ✅ iOS: モーション/向きの許可をユーザー操作で取得 */
+/* ✅ iOS: モーション/向き 許可（ユーザー操作から呼ぶこと） */
 async function requestMotionPermissionIfNeeded() {
   try {
-    // iOS 13+ の場合
     if (typeof DeviceOrientationEvent !== 'undefined' &&
         typeof DeviceOrientationEvent.requestPermission === 'function') {
-
       const res = await DeviceOrientationEvent.requestPermission();
       if (res !== 'granted') throw new Error('DeviceOrientation permission denied');
     }
 
-    // ついでに DeviceMotion も（端末によって必要）
     if (typeof DeviceMotionEvent !== 'undefined' &&
         typeof DeviceMotionEvent.requestPermission === 'function') {
-
       const res2 = await DeviceMotionEvent.requestPermission();
       if (res2 !== 'granted') throw new Error('DeviceMotion permission denied');
     }
@@ -145,7 +140,9 @@ async function requestMotionPermissionIfNeeded() {
 }
 
 btnMode.onclick = async () => {
-  // GPS ON にする前に iOS許可を取る（重要）
+  // ✅ 許可ダイアログがタップ不能になる問題を避けるため、
+  //    ここでは window のタッチイベントを使っていない（下のズーム修正も重要）
+
   const ok = await requestMotionPermissionIfNeeded();
   if (!ok) return;
 
@@ -156,29 +153,29 @@ btnMode.onclick = async () => {
     btnMode.classList.add('mode-gps');
     debug.innerText = "モード: GPS固定（位置取得中…）";
 
-    // gps-camera を付与（実機GPS）
+    // ✅ 実機GPS
     camera.setAttribute('gps-camera', 'gpsMinDistance: 0; gpsTimeInterval: 1000;');
 
-    // 船をGPS位置に固定
+    // ✅ 目的地点へ固定（デモ）
     ship.setAttribute('gps-entity-place', `latitude: ${targetLat}; longitude: ${targetLon};`);
 
-    // 位置指定を外す（GPSが優先）
+    // 手動positionは外す（GPS優先）
     ship.removeAttribute('position');
 
-    // 位置が来たらデバッグ表示（分かりやすい）
+    // 現在地デバッグ
     window.addEventListener('gps-camera-update-position', (e) => {
       const { latitude, longitude, accuracy } = e.detail.position;
       debug.innerText = `モード: GPS固定\n現在地: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}\n精度: ±${Math.round(accuracy)}m`;
-    }, { once: false });
+    });
 
   } else {
-    // 手動モードへ戻す：確実にリセット
     location.reload();
   }
 };
 
-/* --- ピンチ操作 --- */
+/* --- ピンチ操作（2本指拡大）--- */
 let initialDist = 0;
+
 window.addEventListener('touchstart', e => {
   if (e.touches.length === 2) {
     initialDist = Math.hypot(
@@ -186,14 +183,18 @@ window.addEventListener('touchstart', e => {
       e.touches[0].pageY - e.touches[1].pageY
     );
   }
-}, {passive: false});
+}, {passive: true}); // ✅ ここはデフォルト阻害しない
 
 window.addEventListener('touchmove', e => {
   if (e.touches.length === 2 && initialDist > 0) {
+    // ✅ ピンチ中は拡大を優先したいので preventDefault してOK（ただし2本指の時だけ）
+    if (e.cancelable) e.preventDefault();
+
     const dist = Math.hypot(
       e.touches[0].pageX - e.touches[1].pageX,
       e.touches[0].pageY - e.touches[1].pageY
     );
+
     const diff = dist / initialDist;
     curScale *= diff;
     curScale = Math.max(0.1, Math.min(curScale, 50));
@@ -209,25 +210,25 @@ function loop() {
 
   const mesh = ship.object3D;
 
-  // 1. 船の揺れ
+  // 1) 船の揺れ
   mesh.rotation.z = Math.sin(Date.now() * 0.0015) * 0.02;
 
-  // 2. 波（前進中のみ）
+  // 2) 波（前進中のみ）
   bowWave.setAttribute('visible', state.moving > 0 ? 'true' : 'false');
 
-  // 3. 回転
+  // 3) 回転
   if (state.turning !== 0) {
     mesh.rotation.y += THREE.MathUtils.degToRad(1.0) * state.turning;
   }
 
-  // 4. 移動（手動モード時のみが基本。GPSモードで動かすとズレるので必要なら相談）
+  // 4) 移動（GPS中は衝突しやすいので、手動モードのみ）
   if (!isGpsMode && state.moving !== 0) {
     const forward = new THREE.Vector3(0, 0, 1);
     forward.applyQuaternion(mesh.quaternion);
     mesh.position.addScaledVector(forward, state.moving * 0.04);
   }
 
-  // 5. ボタンズーム
+  // 5) ボタン長押しズーム
   if (zoomState !== 0) {
     curScale += zoomState * 0.05;
     curScale = Math.max(0.1, curScale);
@@ -255,6 +256,7 @@ function setAction(id, moveVal, turnVal) {
 
   btn.addEventListener('touchstart', start, {passive:false});
   btn.addEventListener('touchend', end, {passive:false});
+  btn.addEventListener('touchcancel', end, {passive:false});
   btn.addEventListener('mousedown', start);
   btn.addEventListener('mouseup', end);
   btn.addEventListener('mouseleave', end);
@@ -271,19 +273,27 @@ setAction('btn-curve-right-back', -1, -1);
 
 document.getElementById('btn-stop').onclick = () => { state.moving = 0; state.turning = 0; };
 
-// ズーム（押してる間だけ）
+/* ✅ ここが最重要：Allow/Denyのタップを邪魔しないズーム実装
+   - window に touchend を付けない
+   - ズームボタンのときだけ止める */
+const zoomInBtn = document.getElementById('btn-zoom-in');
+const zoomOutBtn = document.getElementById('btn-zoom-out');
+
 const startZoomIn = (e) => { if(e.cancelable) e.preventDefault(); zoomState = 1; };
 const startZoomOut = (e) => { if(e.cancelable) e.preventDefault(); zoomState = -1; };
-const stopZoom = (e) => { if(e.cancelable) e.preventDefault(); zoomState = 0; };
+const stopZoom = () => { zoomState = 0; };
 
-document.getElementById('btn-zoom-in').addEventListener('touchstart', startZoomIn, {passive:false});
-document.getElementById('btn-zoom-out').addEventListener('touchstart', startZoomOut, {passive:false});
-window.addEventListener('touchend', stopZoom);
+zoomInBtn.addEventListener('touchstart', startZoomIn, {passive:false});
+zoomOutBtn.addEventListener('touchstart', startZoomOut, {passive:false});
+zoomInBtn.addEventListener('touchend', stopZoom, {passive:true});
+zoomOutBtn.addEventListener('touchend', stopZoom, {passive:true});
+zoomInBtn.addEventListener('touchcancel', stopZoom, {passive:true});
+zoomOutBtn.addEventListener('touchcancel', stopZoom, {passive:true});
 
-// horn（iOSはユーザー操作でのみ再生可）
+/* --- horn（ユーザー操作から再生）--- */
 document.getElementById('btn-horn').onclick = () => { hornAudio.play(); };
 
-// キャプチャ
+/* --- キャプチャ --- */
 document.getElementById('btn-capture').onclick = () => {
   const cvs = document.querySelector('canvas');
   if (!cvs) return;
