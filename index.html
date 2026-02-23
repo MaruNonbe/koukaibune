@@ -5,10 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
   <title>AR小鵜飼舟 - River Edition</title>
 
-  <!-- ✅ A-Frame -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
-
-  <!-- ✅ AR.js（版固定） -->
   <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.5/aframe/build/aframe-ar.js"></script>
 
   <style>
@@ -30,7 +27,6 @@
 <body>
 <div id="debug-info">モード: 自由配置 (Manual)</div>
 
-<!-- ✅ コメントは a-scene の外へ -->
 <a-scene
   vr-mode-ui="enabled: false"
   embedded
@@ -53,15 +49,18 @@
             rotation="0 180 0"
             scale="5.0 5.0 5.0">
 
+    <!-- ✅ 波：船の「先頭方向（-X）」に合わせて配置し直し -->
     <a-entity id="bow-wave" visible="false">
-      <a-plane position="-0.3 0 1.2" rotation="-90 20 0" width="0.8" height="1.2"
+      <!-- 左側の波（先頭 = -X / 左右 = Z で振る） -->
+      <a-plane position="-1.2 0 -0.3" rotation="-90 -70 0" width="0.8" height="1.2"
                material="src: url(https://raw.githubusercontent.com/aframevr/sample-assets/master/assets/images/noise/noise.png);
                          transparent: true; opacity: 0.6; shader: flat; color: #ffffff; side: double;"
                animation="property: scale; from: 0.2 0.2 1; to: 1.5 2.5 1; dur: 1000; loop: true; easing: easeOutQuad"
                animation__op="property: material.opacity; from: 0.6; to: 0; dur: 1000; loop: true">
       </a-plane>
 
-      <a-plane position="0.3 0 1.2" rotation="-90 -20 0" width="0.8" height="1.2"
+      <!-- 右側の波 -->
+      <a-plane position="-1.2 0 0.3" rotation="-90 -110 0" width="0.8" height="1.2"
                material="src: url(https://raw.githubusercontent.com/aframevr/sample-assets/master/assets/images/noise/noise.png);
                          transparent: true; opacity: 0.6; shader: flat; color: #ffffff; side: double;"
                animation="property: scale; from: 0.2 0.2 1; to: 1.5 2.5 1; dur: 1000; loop: true; easing: easeOutQuad; delay: 200"
@@ -77,7 +76,6 @@
     <div class="btn mode-switch" id="btn-mode">GPS OFF</div>
     <div class="btn btn-icon" id="btn-horn"><span>📢</span><div>音</div></div>
 
-    <!-- ✅ 高さ調整 -->
     <div class="btn btn-icon" id="btn-height-up"><span>⬆️</span><div>高+</div></div>
     <div class="btn btn-icon" id="btn-height-down"><span>⬇️</span><div>高-</div></div>
 
@@ -115,17 +113,14 @@ let isGpsMode = false;
 let curScale = 5.0;
 let state = { moving: 0, turning: 0 };
 let zoomState = 0;
-let heightState = 0; // +1:上げる / -1:下げる / 0:停止
+let heightState = 0;
 
-/* --- GPS座標（必要に応じて変更） --- */
+/* --- GPS座標 --- */
 const targetLat = 38.114742;
 const targetLon = 140.033621;
 
-/* ✅ モデル前方向の補正（ここが“90°回転”の正体）
-   今まで: (0,0,1) = ローカルZ
-   修正後: (1,0,0) = ローカルX（船の長い方向がXだった場合）
-   もし逆向きなら (-1,0,0) にしてください。 */
-const MODEL_FORWARD_LOCAL = new THREE.Vector3(1, 0, 0);
+/* ✅ 船モデルの「前方向」を -X に統一（ここが“逆波”の原因だった箇所） */
+const MODEL_FORWARD_LOCAL = new THREE.Vector3(-1, 0, 0);
 
 /* ✅ iOS: モーション/向き 許可 */
 async function requestMotionPermissionIfNeeded() {
@@ -209,7 +204,7 @@ function loop() {
   // 1) 船の揺れ
   mesh.rotation.z = Math.sin(Date.now() * 0.0015) * 0.02;
 
-  // 2) 波（前進中のみ）
+  // 2) 波：前進中（↑）のみ表示（MODEL_FORWARD_LOCAL を直したので逆にならない）
   bowWave.setAttribute('visible', state.moving > 0 ? 'true' : 'false');
 
   // 3) 回転
@@ -219,12 +214,11 @@ function loop() {
 
   // 4) 移動（Manual時のみ）
   if (!isGpsMode && state.moving !== 0) {
-    // ✅ 船の“長い方向”に沿って進む（90°補正済み）
     const forward = MODEL_FORWARD_LOCAL.clone().applyQuaternion(mesh.quaternion).normalize();
     mesh.position.addScaledVector(forward, state.moving * 0.04);
   }
 
-  // 5) ボタン長押しズーム
+  // 5) ズーム
   if (zoomState !== 0) {
     curScale += zoomState * 0.05;
     curScale = Math.max(0.1, curScale);
@@ -233,10 +227,9 @@ function loop() {
 
   // 6) 高さ調整（Manual時のみ）
   if (!isGpsMode && heightState !== 0) {
-    mesh.position.y += heightState * 0.02; // 上下速度
+    mesh.position.y += heightState * 0.02;
   }
 
-  // デバッグ表示（Manualのときだけ簡易表示）
   if (!isGpsMode) {
     debug.innerText = `モード: 自由配置 (Manual)\n高さY: ${mesh.position.y.toFixed(2)}`;
   }
@@ -278,7 +271,7 @@ setAction('btn-curve-right-back', -1, -1);
 
 document.getElementById('btn-stop').onclick = () => { state.moving = 0; state.turning = 0; };
 
-/* ✅ ズーム（windowにtouchendを付けない：許可ダイアログを邪魔しない） */
+/* ✅ ズーム（windowにtouchendを付けない） */
 const zoomInBtn = document.getElementById('btn-zoom-in');
 const zoomOutBtn = document.getElementById('btn-zoom-out');
 
