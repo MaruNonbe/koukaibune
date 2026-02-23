@@ -23,15 +23,14 @@
     .btn-icon span { font-size: 18px; }
     .mode-switch { background: #333 !important; color: #fff !important; font-weight: bold; width: 80px !important; }
     .mode-gps { background: #007bff !important; }
-    #debug-info { position: fixed; bottom: 10px; left: 10px; color: white; background: rgba(0,0,0,0.5); font-size: 10px; z-index: 10000; pointer-events: none; padding: 6px 8px; border-radius: 6px; }
+    #debug-info { position: fixed; bottom: 10px; left: 10px; color: white; background: rgba(0,0,0,0.5); font-size: 10px; z-index: 10000; pointer-events: none; padding: 6px 8px; border-radius: 6px; white-space: pre-line; }
   </style>
 </head>
 
 <body>
 <div id="debug-info">モード: 自由配置 (Manual)</div>
 
-<!-- ✅ コメントは a-scene の外へ（タグ破損防止） -->
-<!-- ✅ iOS安定化：背面カメラ固定 -->
+<!-- ✅ コメントは a-scene の外へ -->
 <a-scene
   vr-mode-ui="enabled: false"
   embedded
@@ -77,6 +76,11 @@
   <div class="ui-bar">
     <div class="btn mode-switch" id="btn-mode">GPS OFF</div>
     <div class="btn btn-icon" id="btn-horn"><span>📢</span><div>音</div></div>
+
+    <!-- ✅ 高さ調整 -->
+    <div class="btn btn-icon" id="btn-height-up"><span>⬆️</span><div>高+</div></div>
+    <div class="btn btn-icon" id="btn-height-down"><span>⬇️</span><div>高-</div></div>
+
     <div class="btn btn-icon" id="btn-zoom-in"><span>🔍</span><div>+</div></div>
     <div class="btn btn-icon" id="btn-zoom-out"><span>🔍</span><div>-</div></div>
     <div class="btn btn-icon" id="btn-capture"><span>📷</span><div>撮</div></div>
@@ -111,12 +115,19 @@ let isGpsMode = false;
 let curScale = 5.0;
 let state = { moving: 0, turning: 0 };
 let zoomState = 0;
+let heightState = 0; // +1:上げる / -1:下げる / 0:停止
 
 /* --- GPS座標（必要に応じて変更） --- */
 const targetLat = 38.114742;
 const targetLon = 140.033621;
 
-/* ✅ iOS: モーション/向き 許可（ユーザー操作から呼ぶこと） */
+/* ✅ モデル前方向の補正（ここが“90°回転”の正体）
+   今まで: (0,0,1) = ローカルZ
+   修正後: (1,0,0) = ローカルX（船の長い方向がXだった場合）
+   もし逆向きなら (-1,0,0) にしてください。 */
+const MODEL_FORWARD_LOCAL = new THREE.Vector3(1, 0, 0);
+
+/* ✅ iOS: モーション/向き 許可 */
 async function requestMotionPermissionIfNeeded() {
   try {
     if (typeof DeviceOrientationEvent !== 'undefined' &&
@@ -124,13 +135,11 @@ async function requestMotionPermissionIfNeeded() {
       const res = await DeviceOrientationEvent.requestPermission();
       if (res !== 'granted') throw new Error('DeviceOrientation permission denied');
     }
-
     if (typeof DeviceMotionEvent !== 'undefined' &&
         typeof DeviceMotionEvent.requestPermission === 'function') {
       const res2 = await DeviceMotionEvent.requestPermission();
       if (res2 !== 'granted') throw new Error('DeviceMotion permission denied');
     }
-
     return true;
   } catch (e) {
     console.warn(e);
@@ -140,9 +149,6 @@ async function requestMotionPermissionIfNeeded() {
 }
 
 btnMode.onclick = async () => {
-  // ✅ 許可ダイアログがタップ不能になる問題を避けるため、
-  //    ここでは window のタッチイベントを使っていない（下のズーム修正も重要）
-
   const ok = await requestMotionPermissionIfNeeded();
   if (!ok) return;
 
@@ -153,21 +159,15 @@ btnMode.onclick = async () => {
     btnMode.classList.add('mode-gps');
     debug.innerText = "モード: GPS固定（位置取得中…）";
 
-    // ✅ 実機GPS
     camera.setAttribute('gps-camera', 'gpsMinDistance: 0; gpsTimeInterval: 1000;');
-
-    // ✅ 目的地点へ固定（デモ）
     ship.setAttribute('gps-entity-place', `latitude: ${targetLat}; longitude: ${targetLon};`);
-
-    // 手動positionは外す（GPS優先）
     ship.removeAttribute('position');
 
-    // 現在地デバッグ
     window.addEventListener('gps-camera-update-position', (e) => {
       const { latitude, longitude, accuracy } = e.detail.position;
-      debug.innerText = `モード: GPS固定\n現在地: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}\n精度: ±${Math.round(accuracy)}m`;
+      debug.innerText =
+        `モード: GPS固定\n現在地: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}\n精度: ±${Math.round(accuracy)}m`;
     });
-
   } else {
     location.reload();
   }
@@ -175,7 +175,6 @@ btnMode.onclick = async () => {
 
 /* --- ピンチ操作（2本指拡大）--- */
 let initialDist = 0;
-
 window.addEventListener('touchstart', e => {
   if (e.touches.length === 2) {
     initialDist = Math.hypot(
@@ -183,18 +182,15 @@ window.addEventListener('touchstart', e => {
       e.touches[0].pageY - e.touches[1].pageY
     );
   }
-}, {passive: true}); // ✅ ここはデフォルト阻害しない
+}, {passive: true});
 
 window.addEventListener('touchmove', e => {
   if (e.touches.length === 2 && initialDist > 0) {
-    // ✅ ピンチ中は拡大を優先したいので preventDefault してOK（ただし2本指の時だけ）
     if (e.cancelable) e.preventDefault();
-
     const dist = Math.hypot(
       e.touches[0].pageX - e.touches[1].pageX,
       e.touches[0].pageY - e.touches[1].pageY
     );
-
     const diff = dist / initialDist;
     curScale *= diff;
     curScale = Math.max(0.1, Math.min(curScale, 50));
@@ -221,10 +217,10 @@ function loop() {
     mesh.rotation.y += THREE.MathUtils.degToRad(1.0) * state.turning;
   }
 
-  // 4) 移動（GPS中は衝突しやすいので、手動モードのみ）
+  // 4) 移動（Manual時のみ）
   if (!isGpsMode && state.moving !== 0) {
-    const forward = new THREE.Vector3(0, 0, 1);
-    forward.applyQuaternion(mesh.quaternion);
+    // ✅ 船の“長い方向”に沿って進む（90°補正済み）
+    const forward = MODEL_FORWARD_LOCAL.clone().applyQuaternion(mesh.quaternion).normalize();
     mesh.position.addScaledVector(forward, state.moving * 0.04);
   }
 
@@ -233,6 +229,16 @@ function loop() {
     curScale += zoomState * 0.05;
     curScale = Math.max(0.1, curScale);
     mesh.scale.set(curScale, curScale, curScale);
+  }
+
+  // 6) 高さ調整（Manual時のみ）
+  if (!isGpsMode && heightState !== 0) {
+    mesh.position.y += heightState * 0.02; // 上下速度
+  }
+
+  // デバッグ表示（Manualのときだけ簡易表示）
+  if (!isGpsMode) {
+    debug.innerText = `モード: 自由配置 (Manual)\n高さY: ${mesh.position.y.toFixed(2)}`;
   }
 }
 loop();
@@ -247,7 +253,6 @@ function setAction(id, moveVal, turnVal) {
     state.moving = moveVal;
     state.turning = turnVal;
   };
-
   const end = (e) => {
     if (e && e.cancelable) e.preventDefault();
     state.moving = 0;
@@ -273,9 +278,7 @@ setAction('btn-curve-right-back', -1, -1);
 
 document.getElementById('btn-stop').onclick = () => { state.moving = 0; state.turning = 0; };
 
-/* ✅ ここが最重要：Allow/Denyのタップを邪魔しないズーム実装
-   - window に touchend を付けない
-   - ズームボタンのときだけ止める */
+/* ✅ ズーム（windowにtouchendを付けない：許可ダイアログを邪魔しない） */
 const zoomInBtn = document.getElementById('btn-zoom-in');
 const zoomOutBtn = document.getElementById('btn-zoom-out');
 
@@ -290,7 +293,22 @@ zoomOutBtn.addEventListener('touchend', stopZoom, {passive:true});
 zoomInBtn.addEventListener('touchcancel', stopZoom, {passive:true});
 zoomOutBtn.addEventListener('touchcancel', stopZoom, {passive:true});
 
-/* --- horn（ユーザー操作から再生）--- */
+/* ✅ 高さ（押してる間だけ上下） */
+const heightUpBtn = document.getElementById('btn-height-up');
+const heightDownBtn = document.getElementById('btn-height-down');
+
+const startHeightUp = (e) => { if(e.cancelable) e.preventDefault(); heightState = 1; };
+const startHeightDown = (e) => { if(e.cancelable) e.preventDefault(); heightState = -1; };
+const stopHeight = () => { heightState = 0; };
+
+heightUpBtn.addEventListener('touchstart', startHeightUp, {passive:false});
+heightDownBtn.addEventListener('touchstart', startHeightDown, {passive:false});
+heightUpBtn.addEventListener('touchend', stopHeight, {passive:true});
+heightDownBtn.addEventListener('touchend', stopHeight, {passive:true});
+heightUpBtn.addEventListener('touchcancel', stopHeight, {passive:true});
+heightDownBtn.addEventListener('touchcancel', stopHeight, {passive:true});
+
+/* --- horn --- */
 document.getElementById('btn-horn').onclick = () => { hornAudio.play(); };
 
 /* --- キャプチャ --- */
