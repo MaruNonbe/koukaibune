@@ -8,11 +8,8 @@
   <!-- ✅ A-Frame -->
   <script src="https://aframe.io/releases/1.4.2/aframe.min.js"></script>
 
-  <!-- ✅ AR.js（master直参照をやめて版固定：安定化） -->
+  <!-- ✅ AR.js（版固定） -->
   <script src="https://cdn.jsdelivr.net/gh/AR-js-org/AR.js@3.4.5/aframe/build/aframe-ar.js"></script>
-
-  <!-- ❌ three.jsの別読み込みは削除（A-Frame内蔵THREEと衝突してiOSで固まりやすい） -->
-  <!-- <script src="https://cdn.jsdelivr.net/npm/three@0.150.0/build/three.min.js"></script> -->
 
   <style>
     html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; font-family: sans-serif; }
@@ -29,14 +26,15 @@
     #debug-info { position: fixed; bottom: 10px; left: 10px; color: white; background: rgba(0,0,0,0.5); font-size: 10px; z-index: 10000; pointer-events: none; padding: 6px 8px; border-radius: 6px; }
   </style>
 </head>
-<body>
 
+<body>
 <div id="debug-info">モード: 自由配置 (Manual)</div>
 
+<!-- ✅ コメントはタグの外へ（ここ重要） -->
+<!-- ✅ iOS安定化：背面カメラ固定 -->
 <a-scene
   vr-mode-ui="enabled: false"
   embedded
-  <!-- ✅ iOS安定化：背面カメラ固定 -->
   arjs="sourceType: webcam; debugUIEnabled: false; videoTexture: true; facingMode: environment;"
   renderer="precision: mediump; antialias: true; alpha: true; colorManagement: true; exposure: 1.2;"
 >
@@ -48,7 +46,8 @@
   <a-light type="directional" position="-1 4 2" intensity="1.0"></a-light>
   <a-light type="hemisphere" color="#FFF" groundColor="#444" intensity="1.2"></a-light>
 
-  <a-camera id="main-camera" rotation-reader></a-camera>
+  <!-- rotation-reader は未定義だと警告になるので一旦外す（必要なら後で復活できます） -->
+  <a-camera id="main-camera"></a-camera>
 
   <a-entity id="ship"
             gltf-model="models/koukaihune.glb"
@@ -71,6 +70,7 @@
                animation__op="property: material.opacity; from: 0.6; to: 0; dur: 1000; loop: true; delay: 200">
       </a-plane>
     </a-entity>
+
   </a-entity>
 </a-scene>
 
@@ -106,37 +106,78 @@ const btnMode = document.getElementById('btn-mode');
 const debug = document.getElementById('debug-info');
 const hornAudio = document.getElementById('snd-horn');
 
+const THREE = AFRAME.THREE;
+
 let isGpsMode = false;
 let curScale = 5.0;
 let state = { moving: 0, turning: 0 };
 let zoomState = 0;
 
-/* --- GPS制御 (必要に応じて座標を変更してください) --- */
+/* --- GPS制御（必要に応じて変更） --- */
 const targetLat = 38.114742;
 const targetLon = 140.033621;
 
-btnMode.onclick = () => {
+/* ✅ iOS: モーション/向きの許可をユーザー操作で取得 */
+async function requestMotionPermissionIfNeeded() {
+  try {
+    // iOS 13+ の場合
+    if (typeof DeviceOrientationEvent !== 'undefined' &&
+        typeof DeviceOrientationEvent.requestPermission === 'function') {
+
+      const res = await DeviceOrientationEvent.requestPermission();
+      if (res !== 'granted') throw new Error('DeviceOrientation permission denied');
+    }
+
+    // ついでに DeviceMotion も（端末によって必要）
+    if (typeof DeviceMotionEvent !== 'undefined' &&
+        typeof DeviceMotionEvent.requestPermission === 'function') {
+
+      const res2 = await DeviceMotionEvent.requestPermission();
+      if (res2 !== 'granted') throw new Error('DeviceMotion permission denied');
+    }
+
+    return true;
+  } catch (e) {
+    console.warn(e);
+    alert('モーションセンサーの許可が必要です（Allow を選択してください）');
+    return false;
+  }
+}
+
+btnMode.onclick = async () => {
+  // GPS ON にする前に iOS許可を取る（重要）
+  const ok = await requestMotionPermissionIfNeeded();
+  if (!ok) return;
+
   isGpsMode = !isGpsMode;
+
   if (isGpsMode) {
     btnMode.innerText = "GPS ON";
     btnMode.classList.add('mode-gps');
-    debug.innerText = "モード: GPS固定";
+    debug.innerText = "モード: GPS固定（位置取得中…）";
 
-    // gps-camera を付与（※ simulateLatitude/Longitude はデバッグ用途。不要なら消してOK）
-    camera.setAttribute('gps-camera', 'simulateLatitude: 0; simulateLongitude: 0;');
+    // gps-camera を付与（実機GPS）
+    camera.setAttribute('gps-camera', 'gpsMinDistance: 0; gpsTimeInterval: 1000;');
 
     // 船をGPS位置に固定
     ship.setAttribute('gps-entity-place', `latitude: ${targetLat}; longitude: ${targetLon};`);
 
-    // 位置指定を外す（GPSが優先される）
+    // 位置指定を外す（GPSが優先）
     ship.removeAttribute('position');
+
+    // 位置が来たらデバッグ表示（分かりやすい）
+    window.addEventListener('gps-camera-update-position', (e) => {
+      const { latitude, longitude, accuracy } = e.detail.position;
+      debug.innerText = `モード: GPS固定\n現在地: ${latitude.toFixed(6)}, ${longitude.toFixed(6)}\n精度: ±${Math.round(accuracy)}m`;
+    }, { once: false });
+
   } else {
-    // 手動モードに戻す最も確実な方法としてリロード
+    // 手動モードへ戻す：確実にリセット
     location.reload();
   }
 };
 
-/* --- ピンチ操作 (2本指拡大) --- */
+/* --- ピンチ操作 --- */
 let initialDist = 0;
 window.addEventListener('touchstart', e => {
   if (e.touches.length === 2) {
@@ -168,19 +209,19 @@ function loop() {
 
   const mesh = ship.object3D;
 
-  // 1. 船のわずかな揺れ（浮遊感）
+  // 1. 船の揺れ
   mesh.rotation.z = Math.sin(Date.now() * 0.0015) * 0.02;
 
-  // 2. 波エフェクトの表示制御 (前進中のみ表示)
+  // 2. 波（前進中のみ）
   bowWave.setAttribute('visible', state.moving > 0 ? 'true' : 'false');
 
-  // 3. 回転処理
+  // 3. 回転
   if (state.turning !== 0) {
     mesh.rotation.y += THREE.MathUtils.degToRad(1.0) * state.turning;
   }
 
-  // 4. 移動処理
-  if (state.moving !== 0) {
+  // 4. 移動（手動モード時のみが基本。GPSモードで動かすとズレるので必要なら相談）
+  if (!isGpsMode && state.moving !== 0) {
     const forward = new THREE.Vector3(0, 0, 1);
     forward.applyQuaternion(mesh.quaternion);
     mesh.position.addScaledVector(forward, state.moving * 0.04);
@@ -230,7 +271,7 @@ setAction('btn-curve-right-back', -1, -1);
 
 document.getElementById('btn-stop').onclick = () => { state.moving = 0; state.turning = 0; };
 
-// ズーム（押してる間だけズーム）
+// ズーム（押してる間だけ）
 const startZoomIn = (e) => { if(e.cancelable) e.preventDefault(); zoomState = 1; };
 const startZoomOut = (e) => { if(e.cancelable) e.preventDefault(); zoomState = -1; };
 const stopZoom = (e) => { if(e.cancelable) e.preventDefault(); zoomState = 0; };
@@ -239,6 +280,7 @@ document.getElementById('btn-zoom-in').addEventListener('touchstart', startZoomI
 document.getElementById('btn-zoom-out').addEventListener('touchstart', startZoomOut, {passive:false});
 window.addEventListener('touchend', stopZoom);
 
+// horn（iOSはユーザー操作でのみ再生可）
 document.getElementById('btn-horn').onclick = () => { hornAudio.play(); };
 
 // キャプチャ
